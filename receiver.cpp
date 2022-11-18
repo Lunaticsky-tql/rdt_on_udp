@@ -23,15 +23,25 @@ bool rdt_rcv(packet &packet1) {
     }
     return ret != 0;
 }
+bool has_seq0(packet &packet1) {
+    return packet1.head.seq == 0;
+}
+bool has_seq1(packet &packet1) {
+    return packet1.head.seq == 1;
+}
+bool isSYN(packet &packet1) {
+    return (packet1.head.flag & SYN);
+}
 
-bool handshake(SOCKET *socket, SOCKADDR_IN *address) {
+bool handshake() {
     packet rcvpkt;
     int wrong_times = 0;
     while (true) {
         print_message("Waiting for handshake", INFO);
+        //blocking receive here
         if (rdt_rcv(rcvpkt)) {
-            if (rcvpkt.head.flag & SYN) {
-                packet sndpkt = make_pkt(ACK);
+            if (isSYN(rcvpkt)) {
+                packet sndpkt = make_pkt(ACK_SYN);
                 udt_send(sndpkt);
                 return true;
             } else {
@@ -44,11 +54,12 @@ bool handshake(SOCKET *socket, SOCKADDR_IN *address) {
                     wrong_times++;
                     continue;
                 }
-
             }
         }
     }
 }
+
+
 
 int main() {
     WSADATA wsaData;
@@ -64,12 +75,45 @@ int main() {
     addr_len = sizeof(addr_server);
     print_message("Receiver is running on localhost...", INFO);
     //set blocking socket
-//    ioctlsocket(socket_receiver, FIONBIO, &BLOCK_IMODE);
+    //ioctlsocket(socket_receiver, FIONBIO, &BLOCK_IMODE);
     bind(socket_receiver, (SOCKADDR *) &addr_server, sizeof(addr_server));
     //handshake
-    if (!handshake(&socket_receiver, &addr_server)) {
+    if (!handshake()) {
         print_message("Hand shake failed!", ERR);
         return 1;
     }
     print_message("Handshake successfully", SUC);
+    while (true) {
+        clock_t wait_file_start = clock();
+        packet rcvpkt;
+        //change to non-blocking socket
+        ioctlsocket(socket_receiver, FIONBIO, &NON_BLOCK_IMODE);
+        char *file_buffer;
+        while(!rdt_rcv(rcvpkt))
+        {
+            if (wait_file_timeout(wait_file_start)) {
+                print_message("Timeout, no file received", ERR);
+                return 1;
+            }
+        }
+        if(has_seq1(rcvpkt))
+        {
+            print_message("Ready to receive files", SUC);
+            print_message("File name: " + string(rcvpkt.data), INFO);
+            print_message("File size: " + to_string(rcvpkt.head.option), INFO);
+            file_buffer = new char[rcvpkt.head.option];
+        }
+        else if(isSYN(rcvpkt))
+        {
+            //if the ack is lost, the sender will resend the SYN packet
+            print_message("Received a SYN packet, reset the timer", INFO);
+            continue;
+        }
+        else
+        {
+            print_message("Received a wrong packet", ERR);
+            continue;
+        }
+        return 0;
+    }
 }

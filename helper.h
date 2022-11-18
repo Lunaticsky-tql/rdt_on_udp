@@ -9,13 +9,16 @@ using namespace std;
 u_long NON_BLOCK_IMODE=1;
 u_long BLOCK_IMODE=0;
 #define LOCALHOST "127.0.0.1"
+#define BUFFER_SIZE 10000000
 #define MAX_SIZE 1024
 #define MAX_RESEND_TIMES 10
 #define MAX_WRONG_TIMES 10
 const int MAX_TIME = CLOCKS_PER_SEC;
+const int MAX_FILE_WAIT_TIME=60*CLOCKS_PER_SEC;
 #define FIN 0x1
 #define SYN 0x2
 #define ACK 0x4
+#define ACK_SYN 0x6
 #define END 0x8
 #define FILE_HEAD 0x10
 #define FILE_END 0x20
@@ -70,7 +73,7 @@ bool not_corrupt(packet &p) {
 bool corrupt(packet &p) {
     return check_sum((u_short *) &p, HEAD_SIZE + p.head.data_size) !=0;
 }
-packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, char *data = nullptr, u_short window_size = 0,
+packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0,const char *data = nullptr, u_short window_size = 0,
                 u_int option = 0) {
     packet pkt;
     pkt.head.flag = flag;
@@ -87,6 +90,10 @@ packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, char *data = n
 bool timeout(int start_time)
 {
     return clock() - start_time > MAX_TIME;
+}
+bool wait_file_timeout(int start_time)
+{
+    return clock() - start_time > MAX_FILE_WAIT_TIME;
 }
 void color_print(const char *s, int color) {
     HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);

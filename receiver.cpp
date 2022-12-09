@@ -1,22 +1,48 @@
 #include <fstream>
 #include <io.h>
+#include <cassert>
 #include "helper.h"
 
 #define PORT 8888
 string ADR_ROUTER = LOCALHOST;
+
 int addr_len;
 SOCKET socket_receiver;
 SOCKADDR_IN addr_server;
+u_short self_window_size = 10;
+u_short opp_window_size;
+u_int expectedseqnum = 0;
+
+
+packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *data = nullptr,
+                u_int option = 0) {
+    packet pkt;
+    pkt.head.flag = flag;
+    pkt.head.seq = seq;
+    pkt.head.window_size = self_window_size;
+    pkt.head.data_size = data_size;
+    pkt.head.option = option;
+    if (data != nullptr) {
+        memcpy(pkt.data, data, data_size);
+    }
+    pkt.head.check_sum = check_sum((u_short *) &pkt, PACKET_SIZE);
+    return pkt;
+}
+
+void print_window_size() {
+    print_message("Receiver window size: " + to_string(self_window_size) + " Sender window size: " +
+                  to_string(opp_window_size), DEBUG);
+}
 
 void udt_send(packet packet1) {
     sendto(socket_receiver, (char *) &packet1, PACKET_SIZE, 0, (SOCKADDR *) &addr_server, addr_len);
 }
 
 bool rdt_rcv(packet &packet1) {
-    clock_t wait_file_start = clock();
+    clock_t wait_start = clock();
     int ret = recvfrom(socket_receiver, (char *) &packet1, PACKET_SIZE, 0, (SOCKADDR *) &addr_server, &addr_len);
     while (ret == SOCKET_ERROR || ret == 0) {
-        if (wait_file_timeout(wait_file_start)) {
+        if (wait_file_timeout(wait_start)) {
             print_message("Timeout, no packet received", ERR);
             return false;
         }
@@ -36,6 +62,10 @@ bool handshake() {
             if (isSYN(rcvpkt) && not_corrupt(rcvpkt)) {
                 packet sndpkt = make_pkt(ACK_SYN);
                 udt_send(sndpkt);
+                //save window size
+                opp_window_size = rcvpkt.head.window_size;
+                print_window_size();
+                print_message("Handshake successfully", SUC);
                 return true;
             } else {
                 print_message("Received wrong packet", ERR);
@@ -48,9 +78,9 @@ bool handshake() {
                     continue;
                 }
             }
-        }
-        else {
+        } else {
             //timeout
+            print_message("Handshake Timeout", ERR);
             return false;
         }
     }
@@ -63,11 +93,15 @@ string get_file_path(const string &file_name) {
     return file_path;
 }
 
+bool is_file_info_pkt(packet packet1) {
+    return (packet1.head.flag == FILE_INFO) && (packet1.head.seq == 0);
+}
+
 bool ready_for_file(string &file_name, int &file_size) {
     packet rcvpkt;
     print_message("Waiting for file info", INFO);
     if (rdt_rcv(rcvpkt)) {
-        if (has_seq1(rcvpkt)) {
+        if (is_file_info_pkt(rcvpkt)) {
             print_message("File name: " + string(rcvpkt.data), DEBUG);
             print_message("File size: " + to_string(rcvpkt.head.option), DEBUG);
             file_name = string(rcvpkt.data);
@@ -75,13 +109,11 @@ bool ready_for_file(string &file_name, int &file_size) {
             string file_path = get_file_path(file_name);
             print_message("File will be saved to " + file_path, DEBUG);
             print_message("Ready to receive files", SUC);
-            packet sndpkt = make_pkt(ACK, 1);
+            packet sndpkt = make_pkt(ACK_FILE_INFO);
             udt_send(sndpkt);
-//            //change to blocking socket
-//            ioctlsocket(socket_receiver, FIONBIO, &BLOCK_IMODE);
             return true;
         } else if (isSYN(rcvpkt)) {
-            //if the ack is lost, the sender will resend the SYN packet
+            //if the ack in handshake is lost, the sender will resend the SYN packet
             print_message("Received a SYN packet, reset the timer", WARNING);
             // wait for the file info again
             return ready_for_file(file_name, file_size);
@@ -100,28 +132,47 @@ bool ready_for_file(string &file_name, int &file_size) {
     }
 }
 
-int main() {
+bool init_socket() {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         print_message("WSAStartup failed!", ERR);
-        return 1;
+        return false;
     }
     socket_receiver = socket(AF_INET, SOCK_DGRAM, 0);
     addr_server.sin_family = AF_INET;
     addr_server.sin_port = htons(PORT);
-    //we assume the router is on the localhost
+    return true;
+}
+
+void init_IP() {
     addr_server.sin_addr.S_un.S_addr = inet_addr(LOCALHOST);
     addr_len = sizeof(addr_server);
+}
+
+void init_window_size() {
+    print_message("Please input the window size, press ENTER to use default size: " + to_string(self_window_size), TIP);
+    string input_window_size;
+    getline(cin, input_window_size);
+    if (!input_window_size.empty()) {
+        self_window_size = stoi(input_window_size);
+    }
+    print_message("Receiver window size: " + to_string(self_window_size), DEBUG);
+}
+
+int main() {
+    assert(init_socket());
+    //we assume the router is on the localhost
+    init_IP();
+    init_window_size();
     print_message("Receiver is running on localhost...", INFO);
     //set non-blocking socket
     ioctlsocket(socket_receiver, FIONBIO, &NON_BLOCK_IMODE);
     bind(socket_receiver, (SOCKADDR *) &addr_server, sizeof(addr_server));
     //handshake
     if (!handshake()) {
-        print_message("Hand shake failed!", ERR);
+        print_message("Handshake failed, exit", ERR);
         return -1;
     }
-    print_message("Handshake successfully", SUC);
     int received_file_num = 0;
     bool new_file_received = false;
     while (true) {
@@ -130,45 +181,29 @@ int main() {
         string file_name;
         int file_size;
         if (!ready_for_file(file_name, file_size)) {
-            print_message("Exit because of no response",INFO);
+            //end of the file transmission
             return 0;
         }
         file_buffer = new char[file_size];
-        int pkt_no = 0;
+        expectedseqnum = 0;
         int pkt_data_size;
         int received_file_len = 0;
-        int stage = WAIT0;
         clock_t single_file_start = clock();
+        //"blocking receive" here
         while (rdt_rcv(rcvpkt)) {
             if (not_corrupt(rcvpkt)) {
-                if (has_seq0(rcvpkt)) {
-                    if (stage == WAIT0) {
-                        print_message("Received packet " + to_string(pkt_no) + ", with seq 0", DEBUG);
-                        pkt_data_size = rcvpkt.head.data_size;
-                        memcpy(file_buffer + received_file_len, rcvpkt.data, pkt_data_size);
-                        received_file_len += pkt_data_size;
-                        packet sndpkt = make_pkt(ACK, 0);
-                        udt_send(sndpkt);
-                        pkt_no++;
-                        stage = WAIT1;
-                    } else {
-                        print_message("Received a packet with seq 0, but we are waiting for seq 1", WARNING);
-                        continue;
-                    }
-                } else if (has_seq1(rcvpkt)) {
-                    if (stage == WAIT1) {
-                        print_message("Received packet " + to_string(pkt_no) + ", with seq 1", DEBUG);
-                        pkt_data_size = rcvpkt.head.data_size;
-                        memcpy(file_buffer + received_file_len, rcvpkt.data, pkt_data_size);
-                        received_file_len += pkt_data_size;
-                        packet sndpkt = make_pkt(ACK, 1);
-                        udt_send(sndpkt);
-                        pkt_no++;
-                        stage = WAIT0;
-                    } else {
-                        print_message("Received a packet with seq 1, but we are waiting for seq 0", WARNING);
-                        continue;
-                    }
+                if (hasseqnum(rcvpkt, expectedseqnum)) {
+                    pkt_data_size = rcvpkt.head.data_size;
+                    memcpy(file_buffer + received_file_len, rcvpkt.data, pkt_data_size);
+                    received_file_len += pkt_data_size;
+                    packet sndpkt = make_pkt(ACK,expectedseqnum);
+                    udt_send(sndpkt);
+                    print_message("Received packet " + to_string(expectedseqnum), DEBUG);
+                    expectedseqnum++;
+                } else {
+                    //discard the packet and wait for the next one
+                    print_message("Received a out-of-order packet", WARNING);
+                    continue;
                 }
             } else {
                 print_message("Received a corrupt packet", DEBUG);
@@ -191,12 +226,11 @@ int main() {
                 break;
             }
         }
-        if(!new_file_received){
+        if (!new_file_received) {
             //if the code reaches here, it means that sender unexpectedly closed when the file is not received completely
             print_message("Sender closed unexpectedly", ERR);
             return -1;
-        }
-        else{
+        } else {
             //reset the flag
             new_file_received = false;
             received_file_num++;

@@ -22,7 +22,8 @@ const int MAX_FILE_WAIT_TIME =60*CLOCKS_PER_SEC;
 #define ACK 0x4
 #define ACK_SYN 0x6
 #define ACK_FIN 0x5
-#define FILE_HEAD 0x8
+#define FILE_INFO 0x8
+#define ACK_FILE_INFO 0xC
 // datagram format:
 #pragma pack(1)
 struct packet_head {
@@ -90,31 +91,18 @@ bool corrupt(packet &p) {
     return check_sum((u_short *) &p, HEAD_SIZE + p.head.data_size) != 0;
 }
 
-packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *data = nullptr, u_short window_size = 0,
-                u_int option = 0) {
-    packet pkt;
-    pkt.head.flag = flag;
-    pkt.head.seq = seq;
-    pkt.head.window_size = window_size;
-    pkt.head.data_size = data_size;
-    pkt.head.option = option;
-    if (data != nullptr) {
-        memcpy(pkt.data, data, data_size);
-    }
-    pkt.head.check_sum = check_sum((u_short *) &pkt, PACKET_SIZE);
-    return pkt;
-}
-bool has_seq0(packet &packet1) {
-    return packet1.head.seq == 0;
-}
-bool has_seq1(packet &packet1) {
-    return packet1.head.seq == 1;
-}
+
 bool isSYN(packet &packet1) {
     return (packet1.head.flag & SYN);
 }
 bool isFIN(packet &packet1) {
     return (packet1.head.flag & FIN);
+}
+bool isACK(packet &packet1) {
+    return (packet1.head.flag & ACK);
+}
+bool hasseqnum(packet &packet1, u_int seqnum) {
+    return (packet1.head.seq == seqnum);
 }
 bool timeout(int start_time) {
     return clock() - start_time > MAX_TIME;
@@ -122,6 +110,10 @@ bool timeout(int start_time) {
 
 bool wait_file_timeout(int start_time) {
     return clock() - start_time > MAX_FILE_WAIT_TIME;
+}
+//overwrite int min(int,u_int)
+int min(int a, u_int b) {
+    return a < b ? a : b;
 }
 
 void color_print(const char *s, int color) {
@@ -139,6 +131,27 @@ void color_print(const std::string &s, int color) {
     SetConsoleTextAttribute(handle, FOREGROUND_INTENSITY | 7);
 }
 
+// timer for GBN
+class Timer {
+public:
+    Timer() {
+        start_time =INT32_MAX;
+    }
+    void start_timer() {
+        start_time = clock();
+    }
+
+    void stop_timer() {
+        start_time = INT32_MAX;
+    }
+
+    bool timeout() const {
+        return clock() - start_time > MAX_TIME;
+    }
+
+private:
+    int start_time;
+};
 // message colors
 #define ERR 4
 #define INFO 7

@@ -7,10 +7,8 @@ string ADR_ROUTER;
 Timer timer;
 SOCKET socket_sender;
 SOCKADDR_IN addr_server;
-u_short self_window_size = 10;
-u_short opp_window_size;
-//give opp_window_size nickname N
-#define N opp_window_size
+u_short advertised_window_size;
+#define N advertised_window_size
 //variables for GBN
 u_int base;
 u_int nextseqnum;
@@ -21,7 +19,6 @@ packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *da
     packet pkt;
     pkt.head.flag = flag;
     pkt.head.seq = seq;
-    pkt.head.window_size = self_window_size;
     pkt.head.data_size = data_size;
     pkt.head.option = option;
     if (data != nullptr) {
@@ -46,8 +43,7 @@ bool rdt_rcv(packet &packet1) {
 }
 
 void print_window_size() {
-    print_message("Sender window size: " + to_string(self_window_size) + " Receiver window size: " +
-                  to_string(opp_window_size), DEBUG);
+    print_message("Advertised window size: " + to_string(advertised_window_size), DEBUG);
 }
 
 bool is_file_info_ACK(packet &packet1) {
@@ -111,7 +107,7 @@ bool wait_SYN_ACK() {
         }
     }
     //save the window size of the receiver
-    opp_window_size = rcvpkt.head.window_size;
+    advertised_window_size = rcvpkt.head.window_size;
     print_window_size();
     return true;
 
@@ -230,16 +226,6 @@ void init_IP() {
     print_message("Router IP: " + ADR_ROUTER, INFO);
 }
 
-void init_window_size() {
-    //input window size
-    print_message("Please input the window size, press ENTER to use default size: " + to_string(self_window_size), TIP);
-    string input_window_size;
-    getline(cin, input_window_size);
-    if (!input_window_size.empty()) {
-        self_window_size = stoi(input_window_size);
-    }
-    print_message("Sender Window size: " + to_string(self_window_size), DEBUG);
-}
 
 string get_file_name(const string &file_path) {
     return file_path.substr(file_path.find_last_of('\\') + 1);
@@ -248,7 +234,6 @@ string get_file_name(const string &file_path) {
 int main() {
     assert(init_socket());
     init_IP();
-    init_window_size();
     //set non-blocking socket
     ioctlsocket(socket_sender, FIONBIO, &NON_BLOCK_IMODE);
     //handshake

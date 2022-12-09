@@ -45,6 +45,9 @@ bool rdt_rcv(packet &packet1) {
 void print_window_size() {
     print_message("Advertised window size: " + to_string(advertised_window_size), DEBUG);
 }
+void print_window() {
+    cout << "[" << base << "|" << nextseqnum << "|" << base + N << "]" << endl;
+}
 
 bool is_file_info_ACK(packet &packet1) {
     return (packet1.head.flag & ACK) && (packet1.head.flag & FILE_INFO) && packet1.head.seq == 0;
@@ -187,7 +190,8 @@ DWORD WINAPI handle_ACK(LPVOID lpParam) {
             //the packet must be ACK and not corrupt to jump out of the loop
         }
         base = get_ack_num(rcvpkt) + 1;
-        cout<<"Received ACK " + to_string(get_ack_num(rcvpkt))<<endl;
+        cout<<"Received ACK " + to_string(get_ack_num(rcvpkt))+" ";
+        print_window();
         if (base == pkt_total) {
             return 0;
         }
@@ -284,11 +288,12 @@ int main() {
                 pkt_data_size = min(MAX_SIZE, file_len - nextseqnum * MAX_SIZE);
                 sndpkt[nextseqnum] = make_pkt(DATA, nextseqnum, pkt_data_size, file_data + nextseqnum * MAX_SIZE);
                 udt_send(sndpkt[nextseqnum]);
-                cout<<"Sent packet " + to_string(nextseqnum)<<endl;
+                cout<<"Sent packet " + to_string(nextseqnum)+" ";
                 if (base == nextseqnum) {
                     timer.start_timer();
                 }
                 nextseqnum++;
+                print_window();
             }
             //handle timeout
             if (timer.timeout()) {

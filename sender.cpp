@@ -13,6 +13,7 @@ u_short advertised_window_size;
 u_int base;
 u_int nextseqnum;
 u_int pkt_total;
+bool *acked;
 
 packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *data = nullptr,
                 u_int option = 0) {
@@ -45,6 +46,7 @@ bool rdt_rcv(packet &packet1) {
 void print_window_size() {
     print_message("Advertised window size: " + to_string(advertised_window_size), DEBUG);
 }
+
 void print_window() {
     cout << "[" << base << "|" << nextseqnum << "|" << base + N << "]" << endl;
 }
@@ -161,7 +163,7 @@ int get_file_len(const string &file_path) {
     int len = file.tellg();
     file.close();
     print_message("Read file successfully!", SUC);
-    print_message("File length: " + to_string(len)+" bytes", INFO);
+    print_message("File length: " + to_string(len) + " bytes", INFO);
     return len;
 }
 
@@ -181,6 +183,11 @@ int bye_bye() {
 void init_GBN() {
     base = 0;
     nextseqnum = 0;
+    delete[] acked;
+    acked = new bool[pkt_total];
+    for (int i = 0; i < pkt_total; i++) {
+        acked[i] = false;
+    }
 }
 
 DWORD WINAPI handle_ACK(LPVOID lpParam) {
@@ -189,8 +196,12 @@ DWORD WINAPI handle_ACK(LPVOID lpParam) {
         while (!rdt_rcv(rcvpkt) || corrupt(rcvpkt) || !isACK(rcvpkt)) {
             //the packet must be ACK and not corrupt to jump out of the loop
         }
-        base = get_ack_num(rcvpkt) + 1;
-        cout<<"Received ACK " + to_string(get_ack_num(rcvpkt))+" ";
+//        base = get_ack_num(rcvpkt) + 1;
+        acked[get_ack_num(rcvpkt)] = true;
+        while (acked[base]) {
+            base++;
+        }
+        cout << "Received ACK " + to_string(get_ack_num(rcvpkt)) + " ";
         print_window();
         if (base == pkt_total) {
             return 0;
@@ -241,7 +252,7 @@ int main() {
     //set non-blocking socket
     ioctlsocket(socket_sender, FIONBIO, &NON_BLOCK_IMODE);
     //handshake
-    if(!handshake()){
+    if (!handshake()) {
         print_message("Handshake failed!", ERR);
         return -1;
     }
@@ -275,7 +286,7 @@ int main() {
         print_message("Total packets: " + to_string(pkt_total), INFO);
         init_GBN();
         HANDLE handle_ACK_thread = CreateThread(nullptr, 0, handle_ACK, nullptr, 0, nullptr);
-        if(handle_ACK_thread == nullptr){
+        if (handle_ACK_thread == nullptr) {
             print_message("Failed to create ACK thread", ERR);
             return -1;
         }
@@ -288,7 +299,7 @@ int main() {
                 pkt_data_size = min(MAX_SIZE, file_len - nextseqnum * MAX_SIZE);
                 sndpkt[nextseqnum] = make_pkt(DATA, nextseqnum, pkt_data_size, file_data + nextseqnum * MAX_SIZE);
                 udt_send(sndpkt[nextseqnum]);
-                cout<<"Sent packet " + to_string(nextseqnum)+" ";
+                cout << "Sent packet " + to_string(nextseqnum) + " ";
                 if (base == nextseqnum) {
                     timer.start_timer();
                 }

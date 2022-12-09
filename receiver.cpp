@@ -10,7 +10,6 @@ int addr_len;
 SOCKET socket_receiver;
 SOCKADDR_IN addr_server;
 u_short self_window_size = 10;
-u_short opp_window_size;
 u_int expectedseqnum = 0;
 
 
@@ -30,8 +29,7 @@ packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *da
 }
 
 void print_window_size() {
-    print_message("Receiver window size: " + to_string(self_window_size) + " Sender window size: " +
-                  to_string(opp_window_size), DEBUG);
+    print_message("Window size: " + to_string(self_window_size), DEBUG);
 }
 
 void udt_send(packet packet1) {
@@ -62,9 +60,6 @@ bool handshake() {
             if (isSYN(rcvpkt) && not_corrupt(rcvpkt)) {
                 packet sndpkt = make_pkt(ACK_SYN);
                 udt_send(sndpkt);
-                //save window size
-                opp_window_size = rcvpkt.head.window_size;
-                print_window_size();
                 print_message("Handshake successfully", SUC);
                 return true;
             } else {

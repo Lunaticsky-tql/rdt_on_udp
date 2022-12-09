@@ -9,13 +9,11 @@ SOCKET socket_sender;
 SOCKADDR_IN addr_server;
 u_short self_window_size = 10;
 u_short opp_window_size;
-//give self_window_size nickname N
+//give opp_window_size nickname N
 #define N opp_window_size
 //variables for GBN
 u_int base;
 u_int nextseqnum;
-u_int send_idx;
-u_int rcv_idx;
 u_int pkt_total;
 
 packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *data = nullptr,
@@ -184,8 +182,6 @@ int bye_bye() {
 void init_GBN() {
     base = 0;
     nextseqnum = 0;
-    send_idx = 0;
-    rcv_idx = 0;
 }
 
 DWORD WINAPI handle_ACK(LPVOID lpParam) {
@@ -290,6 +286,10 @@ int main() {
         print_message("Total packets: " + to_string(pkt_total), INFO);
         init_GBN();
         HANDLE handle_ACK_thread = CreateThread(nullptr, 0, handle_ACK, nullptr, 0, nullptr);
+        if(handle_ACK_thread == nullptr){
+            print_message("Failed to create ACK thread", ERR);
+            return -1;
+        }
         //wasted space but saved time for "shifting" sndpkt window
         auto *sndpkt = new packet[pkt_total + 1];
         clock_t single_file_timer = clock();

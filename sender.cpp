@@ -4,7 +4,6 @@
 
 #define PORT 6666
 string ADR_ROUTER;
-Timer timer;
 SOCKET socket_sender;
 SOCKADDR_IN addr_server;
 u_short self_window_size = 10;
@@ -14,9 +13,8 @@ u_short opp_window_size;
 //variables for GBN
 u_int base;
 u_int nextseqnum;
-u_int send_idx;
-u_int rcv_idx;
 u_int pkt_total;
+bool *acked;
 
 packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *data = nullptr,
                 u_int option = 0) {
@@ -164,7 +162,7 @@ int get_file_len(const string &file_path) {
     int len = file.tellg();
     file.close();
     print_message("Read file successfully!", SUC);
-    print_message("File length: " + to_string(len)+" bytes", INFO);
+    print_message("File length: " + to_string(len) + " bytes", INFO);
     return len;
 }
 
@@ -181,11 +179,10 @@ int bye_bye() {
     }
 }
 
-void init_GBN() {
+void init_SR(u_int pkt_num) {
     base = 0;
     nextseqnum = 0;
-    send_idx = 0;
-    rcv_idx = 0;
+    acked = new bool[pkt_num];
 }
 
 DWORD WINAPI handle_ACK(LPVOID lpParam) {
@@ -194,20 +191,44 @@ DWORD WINAPI handle_ACK(LPVOID lpParam) {
         while (!rdt_rcv(rcvpkt) || corrupt(rcvpkt) || !isACK(rcvpkt)) {
             //the packet must be ACK and not corrupt to jump out of the loop
         }
-        base = get_ack_num(rcvpkt) + 1;
+        acked[rcvpkt.head.seq] = true;
         cout<<"Received ACK " + to_string(get_ack_num(rcvpkt))<<endl;
         if (base == pkt_total) {
             return 0;
         }
-        if (base == nextseqnum) {
-            timer.stop_timer();
-            continue;
-        } else {
-            timer.start_timer();
-        }
     }
 }
 
+DWORD WINAPI SR(LPVOID lpParam) {
+    packet sndpkt=*reinterpret_cast<packet*>(lpParam);
+    u_int wait_seq = sndpkt.head.seq;
+    int resend_times = 0;
+    //start a timer
+    clock_t start = clock();
+    packet rcvpkt;
+    //non-blocking receive here
+    while (!acked[wait_seq]) {
+        if (timeout(start)) {
+            udt_send(sndpkt);
+            start = clock();
+            if (resend_times > MAX_RESEND_TIMES) {
+                print_message("Resend times exceed the limit, there must be something wrong with the network", ERR);
+                return 1;
+            } else {
+                print_message("Resend packet " + to_string(sndpkt.head.seq), WARNING);
+                resend_times++;
+            }
+        }
+    }
+    //if reach here, the packet is ACKed
+    if(wait_seq==base){
+        //if the ACKed packet is the base, move the window to the first unACKed packet
+        while(acked[base]){
+            base++;
+        }
+    }
+    return 0;
+}
 bool init_socket() {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -256,7 +277,7 @@ int main() {
     //set non-blocking socket
     ioctlsocket(socket_sender, FIONBIO, &NON_BLOCK_IMODE);
     //handshake
-    if(!handshake()){
+    if (!handshake()) {
         print_message("Handshake failed!", ERR);
         return -1;
     }
@@ -288,31 +309,23 @@ int main() {
         pkt_total = file_len / MAX_SIZE + (file_len % MAX_SIZE ? 1 : 0);
         int pkt_data_size;
         print_message("Total packets: " + to_string(pkt_total), INFO);
-        init_GBN();
+        init_SR(pkt_total);
         HANDLE handle_ACK_thread = CreateThread(nullptr, 0, handle_ACK, nullptr, 0, nullptr);
         //wasted space but saved time for "shifting" sndpkt window
-        auto *sndpkt = new packet[pkt_total + 1];
         clock_t single_file_timer = clock();
         while (base < pkt_total) {
             //send packets
             if (nextseqnum < base + N && nextseqnum < pkt_total) {
                 pkt_data_size = min(MAX_SIZE, file_len - nextseqnum * MAX_SIZE);
-                sndpkt[nextseqnum] = make_pkt(DATA, nextseqnum, pkt_data_size, file_data + nextseqnum * MAX_SIZE);
-                udt_send(sndpkt[nextseqnum]);
-                cout<<"Sent packet " + to_string(nextseqnum)<<endl;
-                if (base == nextseqnum) {
-                    timer.start_timer();
-                }
+                packet sndpkt = make_pkt(DATA, nextseqnum, pkt_data_size, file_data + nextseqnum * MAX_SIZE);
+                udt_send(sndpkt);
+                cout << "Sent packet " + to_string(nextseqnum) << endl;
                 nextseqnum++;
-            }
-            //handle timeout
-            if (timer.timeout()) {
-                print_message("Timeout, resend packets from " + to_string(base) + " to " + to_string(nextseqnum - 1),
-                              WARNING);
-                for (u_int i = base; i < nextseqnum; i++) {
-                    udt_send(sndpkt[i]);
+                HANDLE SR_handler = CreateThread(nullptr, 0, SR, (LPVOID) &sndpkt, 0, nullptr);
+                if(SR_handler==nullptr){
+                    print_message("Failed to create thread", ERR);
+                    return -1;
                 }
-                timer.start_timer();
             }
         }
         if (base == pkt_total) {

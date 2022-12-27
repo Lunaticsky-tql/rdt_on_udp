@@ -16,6 +16,7 @@ u_long BLOCK_IMODE = 0;
 const int MAX_TIME = CLOCKS_PER_SEC;
 const int MAX_FILE_WAIT_TIME =60*CLOCKS_PER_SEC;
 #define MAX_SIZE 1024
+#define MSS MAX_DATA_SIZE
 #define DATA 0x0
 #define FIN 0x1
 #define SYN 0x2

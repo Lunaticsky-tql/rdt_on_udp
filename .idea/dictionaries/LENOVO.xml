@@ -1,6 +1,7 @@
 <component name="ProjectDictionaryState">
   <dictionary name="LENOVO">
     <words>
+      <w>cwnd</w>
       <w>expectedseqnum</w>
       <w>hasseqnum</w>
       <w>ioctlsocket</w>
@@ -8,6 +9,8 @@
       <w>rcvpkt</w>
       <w>seqnum</w>
       <w>sndpkt</w>
+      <w>sndpkts</w>
+      <w>ssthresh</w>
     </words>
   </dictionary>
 </component>

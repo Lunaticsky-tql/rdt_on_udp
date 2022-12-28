@@ -92,7 +92,7 @@ bool is_file_info_pkt(packet packet1) {
     return (packet1.head.flag == FILE_INFO) && (packet1.head.seq == 0);
 }
 
-bool ready_for_file(string &file_name, int &file_size) {
+bool ready_for_file(string &file_name, u_int &file_size) {
     packet rcvpkt;
     print_message("Waiting for file info", INFO);
     if (rdt_rcv(rcvpkt)) {
@@ -145,13 +145,17 @@ void init_IP() {
 }
 
 void init_window_size() {
-    print_message("Please input the window size, press ENTER to use default size: " + to_string(self_window_size), TIP);
+    print_message("Please input the window_size size, press ENTER to use default size: " + to_string(self_window_size), TIP);
     string input_window_size;
     getline(cin, input_window_size);
     if (!input_window_size.empty()) {
         self_window_size = stoi(input_window_size);
     }
-    print_message("Receiver window size: " + to_string(self_window_size), DEBUG);
+    print_message("Receiver window_size size: " + to_string(self_window_size), DEBUG);
+}
+
+u_int get_seq_num(packet &packet1) {
+    return packet1.head.seq;
 }
 
 int main() {
@@ -174,7 +178,7 @@ int main() {
         char *file_buffer;
         packet rcvpkt;
         string file_name;
-        int file_size;
+        u_int file_size;
         if (!ready_for_file(file_name, file_size)) {
             //end of the file transmission
             return 0;
@@ -197,7 +201,10 @@ int main() {
                     expectedseqnum++;
                 } else {
                     //discard the packet and wait for the next one
-                    print_message("Received a out-of-order packet", WARNING);
+                    print_message("Received out-of-order packet " + to_string(get_seq_num(rcvpkt)), DEBUG);
+                    //send the ack of the last received packet
+                    packet sndpkt = make_pkt(ACK,expectedseqnum - 1);
+                    udt_send(sndpkt);
                     continue;
                 }
             } else {

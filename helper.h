@@ -16,7 +16,7 @@ u_long BLOCK_IMODE = 0;
 const int MAX_TIME = CLOCKS_PER_SEC;
 const int MAX_FILE_WAIT_TIME =60*CLOCKS_PER_SEC;
 #define MAX_SIZE 1024
-#define MSS MAX_DATA_SIZE
+#define MSS MAX_SIZE
 #define DATA 0x0
 #define FIN 0x1
 #define SYN 0x2
@@ -59,12 +59,24 @@ struct packet {
 
 const int HEAD_SIZE = sizeof(packet_head);
 const int PACKET_SIZE = sizeof(packet);
-#define SEND0 0
-#define SEND1 1
-#define WAIT0 0
-#define WAIT1 1
+// RENO states
+#define SLOW_START 0
+#define CONGESTION_AVOIDANCE 1
+#define FAST_RECOVERY 2
 
 //useful functions
+string state_to_str(int state) {
+    switch (state) {
+        case SLOW_START:
+            return "SLOW_START";
+        case CONGESTION_AVOIDANCE:
+            return "CONGESTION_AVOIDANCE";
+        case FAST_RECOVERY:
+            return "FAST_RECOVERY";
+        default:
+            return "UNKNOWN";
+    }
+}
 u_short check_sum(u_short *packet, int packet_len) {
     u_long sum = 0;
     // make 16 bit words adjacent
@@ -116,7 +128,6 @@ bool wait_file_timeout(int start_time) {
 int min(int a, u_int b) {
     return a < b ? a : b;
 }
-
 void color_print(const char *s, int color) {
     HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
     SetConsoleTextAttribute(handle, FOREGROUND_INTENSITY | color);
@@ -147,7 +158,7 @@ public:
     }
 
     bool timeout() const {
-        return clock() - start_time > MAX_TIME;
+        return clock() - start_time > 5*MAX_TIME;
     }
 
 private:

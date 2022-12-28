@@ -1,19 +1,27 @@
 #include <fstream>
 #include <cassert>
 #include "helper.h"
-
+#include <mutex>
 #define PORT 6666
 string ADR_ROUTER;
 Timer timer;
 SOCKET socket_sender;
 SOCKADDR_IN addr_server;
-u_short advertised_window_size;
-#define N advertised_window_size
+u_int advertised_window_size; // advertised window_size size is number of packets
 //variables for GBN
 u_int base;
 u_int nextseqnum;
 u_int pkt_total;
-bool *acked;
+//variables for RENO
+u_int ssthresh;
+u_int cwnd;
+u_int dupACKcount;
+u_int LastByteSent, LastByteAcked;
+u_int window_size;
+int RENO_STATE;
+bool fast_resend;
+packet *sndpkts;
+static mutex mutexLock;
 
 packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *data = nullptr,
                 u_int option = 0) {
@@ -44,11 +52,13 @@ bool rdt_rcv(packet &packet1) {
 }
 
 void print_window_size() {
-    print_message("Advertised window size: " + to_string(advertised_window_size), DEBUG);
+    print_message("Advertised window_size size: " + to_string(advertised_window_size), DEBUG);
 }
 
 void print_window() {
-    cout << "[" << base << "|" << nextseqnum << "|" << base + N << "]" << endl;
+    cout << "[" << state_to_str(RENO_STATE) << "]";
+    cout << "[" << LastByteAcked << "|" << LastByteSent << "|" << LastByteAcked + window_size << "]";
+    cout << " cwnd:" << cwnd << " ssthresh:" << ssthresh <<" window_size:"<<window_size<< endl;
 }
 
 bool is_file_info_ACK(packet &packet1) {
@@ -111,8 +121,8 @@ bool wait_SYN_ACK() {
             }
         }
     }
-    //save the window size of the receiver
-    advertised_window_size = rcvpkt.head.window_size;
+    //save the window_size size of the receiver
+    advertised_window_size = rcvpkt.head.window_size * MSS;
     print_window_size();
     return true;
 
@@ -153,14 +163,14 @@ bool handshake() {
     return true;
 }
 
-int get_file_len(const string &file_path) {
+u_int get_file_len(const string &file_path) {
     ifstream file(file_path, ios::binary);
     if (!file.is_open()) {
         print_message("File not found", ERR);
         return -1;
     }
     file.seekg(0, ios::end);
-    int len = file.tellg();
+    u_int len = file.tellg();
     file.close();
     print_message("Read file successfully!", SUC);
     print_message("File length: " + to_string(len) + " bytes", INFO);
@@ -183,12 +193,23 @@ int bye_bye() {
 void init_GBN() {
     base = 0;
     nextseqnum = 0;
-    delete[] acked;
-    acked = new bool[pkt_total];
-    for (int i = 0; i < pkt_total; i++) {
-        acked[i] = false;
-    }
 }
+
+void init_RENO() {
+    //if there is no congestion, we want to send as many packets as possible
+    ssthresh = advertised_window_size/2;
+    dupACKcount = 0;
+    LastByteSent = 0;
+    LastByteAcked = 0;
+    RENO_STATE = SLOW_START;
+    fast_resend = false;
+    cwnd = MSS;
+    //wasted space but saved time for "shifting" sndpkt window_size
+    delete[] sndpkts;
+    sndpkts = new packet[pkt_total + 1];
+
+}
+
 
 DWORD WINAPI handle_ACK(LPVOID lpParam) {
     packet rcvpkt;
@@ -196,13 +217,67 @@ DWORD WINAPI handle_ACK(LPVOID lpParam) {
         while (!rdt_rcv(rcvpkt) || corrupt(rcvpkt) || !isACK(rcvpkt)) {
             //the packet must be ACK and not corrupt to jump out of the loop
         }
+        // we noticed that once we received a larger ACK,
+        // we can safely assume that all the packets before it are ACKed, no matter what happens to the ACK packet itself
+        // because the receiver will not send a larger ACK until it receives all the packets before it
 //        base = get_ack_num(rcvpkt) + 1;
-        acked[get_ack_num(rcvpkt)] = true;
-        while (acked[base]) {
-            base++;
+//        acked[get_ack_num(rcvpkt)] = true;
+//        while (acked[base]) {
+//            base++;
+//        }
+        u_int ack_num = get_ack_num(rcvpkt);
+        if (ack_num >= base) {
+            u_int gap = ack_num - base + 1;
+            //update the base and LastByteAcked
+            for (int i = 0; i < gap; i++) {
+//                cout<<"sndpkts["<<base+i<<"].head.data_size = "<<sndpkts[base+i].head.data_size<<endl;
+                LastByteAcked += sndpkts[base + i].head.data_size;
+            }
+            base = ack_num + 1;
+            switch (RENO_STATE) {
+                case SLOW_START:
+                    cwnd += gap * MSS;
+                    dupACKcount = 0;
+                    if (cwnd >= ssthresh) {
+                        RENO_STATE = CONGESTION_AVOIDANCE;
+                    }
+                    break;
+                case CONGESTION_AVOIDANCE:
+                    cwnd += gap * MSS * MSS / cwnd;
+                    dupACKcount = 0;
+                    break;
+                case FAST_RECOVERY:
+                    cwnd = ssthresh;
+                    RENO_STATE = CONGESTION_AVOIDANCE;
+                    dupACKcount = 0;
+                    break;
+                default:
+                    break;
+            }
+            window_size = min(cwnd, advertised_window_size);
+        } else {
+            //duplicate ACK
+            dupACKcount++;
+            if (RENO_STATE == SLOW_START || RENO_STATE == CONGESTION_AVOIDANCE) {
+                if (dupACKcount == 3) {
+                    //fast retransmit
+//                    fast_resend=true;
+                    ssthresh = cwnd / 2;
+                    cwnd = ssthresh + 3 * MSS;
+                    window_size = min(cwnd, advertised_window_size);
+                    RENO_STATE = FAST_RECOVERY;
+                    print_message("Fast resend"+to_string(ack_num), WARNING);
+                    //resend the packet
+                    udt_send(sndpkts[ack_num + 1]);
+                } else {
+                    cwnd += MSS;
+                }
+            }
         }
+//        mutexLock.lock();
         cout << "Received ACK " + to_string(get_ack_num(rcvpkt)) + " ";
         print_window();
+//        mutexLock.unlock();
         if (base == pkt_total) {
             return 0;
         }
@@ -285,25 +360,26 @@ int main() {
         int pkt_data_size;
         print_message("Total packets: " + to_string(pkt_total), INFO);
         init_GBN();
+        init_RENO();
         HANDLE handle_ACK_thread = CreateThread(nullptr, 0, handle_ACK, nullptr, 0, nullptr);
         if (handle_ACK_thread == nullptr) {
             print_message("Failed to create ACK thread", ERR);
             return -1;
         }
-        //wasted space but saved time for "shifting" sndpkt window
-        auto *sndpkt = new packet[pkt_total + 1];
         clock_t single_file_timer = clock();
         while (base < pkt_total) {
             //send packets
-            if (nextseqnum < base + N && nextseqnum < pkt_total) {
+            window_size = min(cwnd, advertised_window_size);
+            if ((LastByteSent - LastByteAcked < window_size) && (LastByteSent < file_len)) {
                 pkt_data_size = min(MAX_SIZE, file_len - nextseqnum * MAX_SIZE);
-                sndpkt[nextseqnum] = make_pkt(DATA, nextseqnum, pkt_data_size, file_data + nextseqnum * MAX_SIZE);
-                udt_send(sndpkt[nextseqnum]);
+                sndpkts[nextseqnum] = make_pkt(DATA, nextseqnum, pkt_data_size, file_data + nextseqnum * MAX_SIZE);
+                udt_send(sndpkts[nextseqnum]);
                 cout << "Sent packet " + to_string(nextseqnum) + " ";
                 if (base == nextseqnum) {
                     timer.start_timer();
                 }
                 nextseqnum++;
+                LastByteSent += pkt_data_size;
                 print_window();
             }
             //handle timeout
@@ -311,10 +387,17 @@ int main() {
                 print_message("Timeout, resend packets from " + to_string(base) + " to " + to_string(nextseqnum - 1),
                               WARNING);
                 for (u_int i = base; i < nextseqnum; i++) {
-                    udt_send(sndpkt[i]);
+                    udt_send(sndpkts[i]);
                 }
+                ssthresh = cwnd / 2;
+                cwnd = MSS;
+                dupACKcount = 0;
+                RENO_STATE = SLOW_START;
                 timer.start_timer();
             }
+            // wait for a while to send next packet (simulating content processing)
+            // this is to avoid sending too many packets at once
+            Sleep(10);
         }
         if (base == pkt_total) {
             print_message("File sent successfully!", SUC);
@@ -333,6 +416,5 @@ int main() {
             print_message("Error when sending file", ERR);
             return 1;
         }
-
     }
 }

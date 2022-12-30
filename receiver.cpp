@@ -233,7 +233,9 @@ int main() {
                         //send ack
 //                        packet sndpkt = make_pkt(ACK, pkt_seq);
 //                        udt_send(sndpkt);
-                        print_message("Sent ack " + to_string(pkt_seq), DEBUG);
+                        packet sndpkt = make_pkt(ACK, rcv_base - 1);
+                        udt_send(sndpkt);
+//                        print_message("Sent ack " + to_string(pkt_seq), DEBUG);
                     }
                 } else if ((pkt_seq >= rcv_base - N) && (pkt_seq <= rcv_base - 1)) {
                     //out of the window, but in the buffer
@@ -241,7 +243,7 @@ int main() {
 //                    //send ack
 //                    packet sndpkt = make_pkt(ACK, pkt_seq);
 //                    udt_send(sndpkt);
-                    print_message("Sent ack " + to_string(pkt_seq), DEBUG);
+//                    print_message("Sent ack " + to_string(pkt_seq), DEBUG);
                 } else {
                     //out of the window and buffer
                     print_message("Received packet " + to_string(pkt_seq) + " out of the window", WARNING);

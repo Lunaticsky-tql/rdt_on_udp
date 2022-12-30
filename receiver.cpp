@@ -11,7 +11,9 @@ SOCKET socket_receiver;
 SOCKADDR_IN addr_server;
 u_short self_window_size = 10;
 u_int expectedseqnum = 0;
-
+#define N self_window_size
+bool *acked;
+u_int rcv_base;
 
 packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *data = nullptr,
                 u_int option = 0) {
@@ -29,7 +31,7 @@ packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *da
 }
 
 void print_window_size() {
-    print_message("Window size: " + to_string(self_window_size),DEBUG);
+    print_message("Window size: " + to_string(self_window_size), DEBUG);
 }
 
 void udt_send(packet packet1) {
@@ -92,7 +94,7 @@ bool is_file_info_pkt(packet packet1) {
     return (packet1.head.flag == FILE_INFO) && (packet1.head.seq == 0);
 }
 
-bool ready_for_file(string &file_name, u_int &file_size) {
+bool ready_for_file(string &file_name, int &file_size) {
     packet rcvpkt;
     print_message("Waiting for file info", INFO);
     if (rdt_rcv(rcvpkt)) {
@@ -145,17 +147,23 @@ void init_IP() {
 }
 
 void init_window_size() {
-    print_message("Please input the window_size size, press ENTER to use default size: " + to_string(self_window_size), TIP);
+    print_message("Please input the window size, press ENTER to use default size: " + to_string(self_window_size), TIP);
     string input_window_size;
     getline(cin, input_window_size);
     if (!input_window_size.empty()) {
         self_window_size = stoi(input_window_size);
     }
-    print_message("Receiver window_size size: " + to_string(self_window_size), DEBUG);
+    print_message("Receiver window size: " + to_string(self_window_size), DEBUG);
 }
 
-u_int get_seq_num(packet &packet1) {
-    return packet1.head.seq;
+void initSR(int file_size) {
+    u_int pkt_num = file_size / MAX_SIZE + (file_size % MAX_SIZE ? 1 : 0);
+    delete[] acked;
+    acked = new bool[pkt_num];
+    for (int i = 0; i < pkt_num; i++) {
+        acked[i] = false;
+    }
+    rcv_base = 0;
 }
 
 int main() {
@@ -178,40 +186,72 @@ int main() {
         char *file_buffer;
         packet rcvpkt;
         string file_name;
-        u_int file_size;
+        int file_size;
         if (!ready_for_file(file_name, file_size)) {
             //end of the file transmission
             return 0;
         }
         file_buffer = new char[file_size];
-        expectedseqnum = 0;
+        initSR(file_size);
         int pkt_data_size;
-        int received_file_len = 0;
         clock_t single_file_start = clock();
         //"blocking receive" here
         while (rdt_rcv(rcvpkt)) {
             if (not_corrupt(rcvpkt)) {
-                if (hasseqnum(rcvpkt, expectedseqnum)) {
-                    pkt_data_size = rcvpkt.head.data_size;
-                    memcpy(file_buffer + received_file_len, rcvpkt.data, pkt_data_size);
-                    received_file_len += pkt_data_size;
-                    packet sndpkt = make_pkt(ACK,expectedseqnum);
-                    udt_send(sndpkt);
-                    print_message("Received packet " + to_string(expectedseqnum), DEBUG);
-                    expectedseqnum++;
+                u_int pkt_seq = rcvpkt.head.seq;
+                if (pkt_seq >= rcv_base && pkt_seq <= rcv_base + N - 1) {
+                    //in the window
+                    if (!acked[pkt_seq]) {
+                        if (pkt_seq == rcv_base) {
+                            //the first packet in the window
+                            pkt_data_size = rcvpkt.head.data_size;
+                            memcpy(file_buffer + pkt_seq * MAX_SIZE, rcvpkt.data, pkt_data_size);
+                            acked[pkt_seq] = true;
+//                            packet sndpkt = make_pkt(ACK, pkt_seq);
+//                            udt_send(sndpkt);
+                            print_message("Received packet " + to_string(pkt_seq), DEBUG);
+                            //slide the window
+                            while (acked[rcv_base]) {
+                                rcv_base++;
+                            }
+                            packet sndpkt = make_pkt(ACK, rcv_base - 1);
+                            udt_send(sndpkt);
+                        } else {
+                            //not the first packet in the window, cache it
+                            pkt_data_size = rcvpkt.head.data_size;
+                            memcpy(file_buffer + pkt_seq * MAX_SIZE, rcvpkt.data, pkt_data_size);
+                            acked[pkt_seq] = true;
+//                            packet sndpkt = make_pkt(ACK, pkt_seq);
+//                            udt_send(sndpkt);
+                            packet sndpkt = make_pkt(ACK, rcv_base - 1);
+                            udt_send(sndpkt);
+                            print_message("Received packet " + to_string(pkt_seq) + ", cached", DEBUG);
+                        }
+                    } else {
+                        //already acked in the window, resend the ack
+                        print_message("Received packet " + to_string(pkt_seq) + " again", WARNING);
+                        //send ack
+//                        packet sndpkt = make_pkt(ACK, pkt_seq);
+//                        udt_send(sndpkt);
+                        print_message("Sent ack " + to_string(pkt_seq), DEBUG);
+                    }
+                } else if ((pkt_seq >= rcv_base - N) && (pkt_seq <= rcv_base - 1)) {
+                    //out of the window, but in the buffer
+                    print_message("Received packet " + to_string(pkt_seq) + " again", WARNING);
+//                    //send ack
+//                    packet sndpkt = make_pkt(ACK, pkt_seq);
+//                    udt_send(sndpkt);
+                    print_message("Sent ack " + to_string(pkt_seq), DEBUG);
                 } else {
-                    //discard the packet and wait for the next one
-                    print_message("Received out-of-order packet " + to_string(get_seq_num(rcvpkt)), DEBUG);
-                    //send the ack of the last received packet
-                    packet sndpkt = make_pkt(ACK,expectedseqnum - 1);
-                    udt_send(sndpkt);
-                    continue;
+                    //out of the window and buffer
+                    print_message("Received packet " + to_string(pkt_seq) + " out of the window", WARNING);
+                    //do not send ack
                 }
             } else {
                 print_message("Received a corrupt packet", DEBUG);
                 continue;
             }
-            if (received_file_len == file_size) {
+            if (rcv_base * MAX_SIZE >= file_size) {
                 print_message("Received file successfully", SUC);
                 print_message("Time used: " + to_string(clock() - single_file_start) + "ms", INFO);
                 //write the file to disk

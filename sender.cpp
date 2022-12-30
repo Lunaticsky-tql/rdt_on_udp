@@ -1,7 +1,6 @@
 #include <fstream>
 #include <cassert>
 #include "helper.h"
-#include <mutex>
 #define PORT 6666
 string ADR_ROUTER;
 Timer timer;
@@ -21,7 +20,6 @@ u_int window_size;
 int RENO_STATE;
 bool fast_resend;
 packet *sndpkts;
-static mutex mutexLock;
 
 packet make_pkt(u_int flag, u_int seq = 0, u_short data_size = 0, const char *data = nullptr,
                 u_int option = 0) {
@@ -261,12 +259,11 @@ DWORD WINAPI handle_ACK(LPVOID lpParam) {
             if (RENO_STATE == SLOW_START || RENO_STATE == CONGESTION_AVOIDANCE) {
                 if (dupACKcount == 3) {
                     //fast retransmit
-//                    fast_resend=true;
                     ssthresh = cwnd / 2;
                     cwnd = ssthresh + 3 * MSS;
                     window_size = min(cwnd, advertised_window_size);
                     RENO_STATE = FAST_RECOVERY;
-                    print_message("Fast resend"+to_string(ack_num), WARNING);
+                    print_message("Fast resend"+to_string(ack_num+1), WARNING);
                     //resend the packet
                     udt_send(sndpkts[ack_num + 1]);
                 } else {
@@ -274,10 +271,8 @@ DWORD WINAPI handle_ACK(LPVOID lpParam) {
                 }
             }
         }
-//        mutexLock.lock();
         cout << "Received ACK " + to_string(get_ack_num(rcvpkt)) + " ";
         print_window();
-//        mutexLock.unlock();
         if (base == pkt_total) {
             return 0;
         }
